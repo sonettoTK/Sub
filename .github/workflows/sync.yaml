@@ -11,6 +11,8 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write          # 显式授予写入权限（可选，依赖于仓库设置）
 
     steps:
       - name: 设置时区
@@ -21,6 +23,7 @@ jobs:
         with:
           submodules: true
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}   # 使用内置 token
 
       - name: 拉取远端最新代码（确保工作区干净）
         run: |
@@ -48,6 +51,8 @@ jobs:
         run: |
           git add .
           git commit -m "sync: $(date '+%Y-%m-%d %H:%M:%S')"
+          # 将 remote URL 改为带 token 的形式，GITHUB_TOKEN 需要具有写入权限
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
           git push origin main
 
       - name: 删除旧的工作流运行记录
