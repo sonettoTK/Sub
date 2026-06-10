@@ -1,54 +1,65 @@
 name: 同步
 
-# 触发条件
 on:
-  workflow_dispatch:
+  workflow_dispatch:               # 手动触发
   watch:
-    types: [started]
-  # schedule:
-  #   - cron: "0 0 * * *"
+    types: [started]               # 点 Star 触发
+  schedule:
+    - cron: "0 * * * *"            # 每小时整点运行（UTC 时间，北京时间 +8）
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 10            # 防止意外挂起
+
     steps:
       - name: 设置时区
         run: sudo timedatectl set-timezone 'Asia/Shanghai'
 
-      - name: 迁出代码
+      - name: 迁出代码（含完整历史）
         uses: actions/checkout@v4
         with:
           submodules: true
+          fetch-depth: 0            # 获取完整提交历史，便于 diff 和 rebase
 
-      - name: 执行任务
+      - name: 下载最新代理配置
+        id: download
         run: |
-          curl https://gist.githubusercontent.com/anaer/f0ba4dda0c0e106c9497bad193d9d3d9/raw/Work.yaml -o proxies.yaml
+          # 下载远程配置，失败则标记并退出
+          if ! curl -fsSL https://gist.githubusercontent.com/anaer/f0ba4dda0c0e106c9497bad193d9d3d9/raw/Work.yaml -o proxies.yaml; then
+            echo "下载失败，请检查网络或源地址"
+            exit 1
+          fi
+          # 显示文件大小（调试用）
+          ls -lh proxies.yaml
 
-      # 判断是否存在git变更, 设置变更变量
-      - name: Check for changes
+      - name: 检查是否有变更
         id: git-status
         run: |
           git diff --exit-code --quiet || echo "changed=true" >> $GITHUB_OUTPUT
         continue-on-error: true
 
-      # 如果存在变更, 怎提交代码并推送
-      - name: Push to origin main
+      - name: 提交并推送变更
         if: steps.git-status.outputs.changed == 'true'
         run: |
-          git config --local user.name "anaer"
-          git config --local user.email "anaer@users.noreply.github.com"
-          git pull
+          # 配置用户信息
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+
+          # 拉取最新远端改动（避免冲突）
+          git pull --rebase origin main
+
+          # 添加所有变化（主要是 proxies.yaml）
           git add .
-          git commit -m "sync"
 
-      - name: 推送更改
-        if: steps.git-status.outputs.changed == 'true'
-        uses: ad-m/github-push-action@master
-        with:
-          # github_token: ${{ secrets.TOKEN }}
-          branch: main
+          # 生成带时间戳的提交信息
+          commit_msg="sync: $(date '+%Y-%m-%d %H:%M:%S')"
+          git commit -m "$commit_msg"
 
-      - name: 删除历史记录
+          # 推送至远端 main 分支（使用默认 GITHUB_TOKEN）
+          git push origin main
+
+      - name: 删除旧的工作流运行记录（保留最近3次且超过1天的）
         uses: anaer/delete-workflow-runs@main
         with:
           retain_days: 1
