@@ -1,18 +1,19 @@
 name: 同步
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:               # 手动触发
   watch:
-    types: [started]
+    types: [started]               # 点 Star 触发
   schedule:
-    - cron: "0 * * * *"
+    - cron: "0 * * * *"            # 每小时整点运行（UTC 时间，北京时间 +8）
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write          # 显式授予写入权限（可选，依赖于仓库设置）
+      contents: write               # 允许推送代码
+      actions: write                # 允许删除 workflow runs
 
     steps:
       - name: 设置时区
@@ -23,9 +24,9 @@ jobs:
         with:
           submodules: true
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}   # 使用内置 token
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 拉取远端最新代码（确保工作区干净）
+      - name: 配置 Git 用户并拉取最新代码
         run: |
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
@@ -51,12 +52,23 @@ jobs:
         run: |
           git add .
           git commit -m "sync: $(date '+%Y-%m-%d %H:%M:%S')"
-          # 将 remote URL 改为带 token 的形式，GITHUB_TOKEN 需要具有写入权限
+          # 使用 GITHUB_TOKEN 进行身份验证
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
           git push origin main
 
-      - name: 删除旧的工作流运行记录
-        uses: anaer/delete-workflow-runs@main
-        with:
-          retain_days: 1
-          keep_minimum_runs: 3
+      - name: 删除旧的工作流运行记录（保留最近 3 条且超过 1 天）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 获取超过 1 天前的所有运行记录 ID
+          runs=$(gh api repos/${{ github.repository }}/actions/runs --paginate --jq '.workflow_runs[] | select(.created_at < "'$(date -d '1 day ago' -Iseconds)'") | .id')
+          count=$(echo "$runs" | grep -c '^[0-9]\+$' || true)
+          if [ $count -gt 3 ]; then
+            echo "找到 $count 条旧记录，将删除最早 $((count - 3)) 条"
+            echo "$runs" | tail -n +4 | while read id; do
+              echo "删除运行记录 ID: $id"
+              gh api -X DELETE repos/${{ github.repository }}/actions/runs/$id
+            done
+          else
+            echo "旧记录不超过 3 条，无需删除"
+          fi
