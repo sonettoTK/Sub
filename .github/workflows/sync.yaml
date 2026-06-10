@@ -1,32 +1,32 @@
 name: 同步
 
 on:
-  workflow_dispatch:               # 手动触发
+  workflow_dispatch:
   watch:
-    types: [started]               # 点 Star 触发
+    types: [started]
   schedule:
-    - cron: "0 * * * *"            # 每小时整点运行（UTC 时间，北京时间 +8）
+    - cron: "0 * * * *"
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write               # 允许推送代码
-      actions: write                # 允许删除 workflow runs
+      contents: write
+      actions: write
 
     steps:
       - name: 设置时区
         run: sudo timedatectl set-timezone 'Asia/Shanghai'
 
-      - name: 迁出代码（含完整历史）
+      - name: 迁出代码
         uses: actions/checkout@v4
         with:
           submodules: true
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 配置 Git 用户并拉取最新代码
+      - name: 配置 Git 并拉取最新代码
         run: |
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
@@ -41,32 +41,39 @@ jobs:
           fi
           ls -lh proxies.yaml
 
-      - name: 检查是否有变更
-        id: git-status
+      - name: 检查 proxies.yaml 是否有变更
+        id: yaml-changed
         run: |
-          git diff --exit-code --quiet || echo "changed=true" >> $GITHUB_OUTPUT
+          git diff --exit-code -- proxies.yaml || echo "yaml_changed=true" >> $GITHUB_OUTPUT
         continue-on-error: true
 
-      - name: 提交并推送变更
-        if: steps.git-status.outputs.changed == 'true'
+      - name: 如果有变更，直接提交 proxies.yaml
+        if: steps.yaml-changed.outputs.yaml_changed == 'true'
         run: |
-          git add .
-          git commit -m "sync: $(date '+%Y-%m-%d %H:%M:%S')"
-          # 使用 GITHUB_TOKEN 进行身份验证
+          git add proxies.yaml
+          git commit -m "sync: $(date '+%Y-%m-%d %H:%M:%S') (content updated)"
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
           git push origin main
 
-      - name: 删除旧的工作流运行记录（保留最近 3 条且超过 1 天）
+      - name: 如果无变更，更新时间戳文件强制产生提交
+        if: steps.yaml-changed.outputs.yaml_changed != 'true'
+        run: |
+          echo "proxies.yaml 内容未变，更新时间戳文件"
+          date '+%Y-%m-%d %H:%M:%S' > .last_sync
+          git add .last_sync
+          git commit -m "sync: $(date '+%Y-%m-%d %H:%M:%S') (no content change, forced timestamp)"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git push origin main
+
+      - name: 删除旧的工作流运行记录
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 获取超过 1 天前的所有运行记录 ID
           runs=$(gh api repos/${{ github.repository }}/actions/runs --paginate --jq '.workflow_runs[] | select(.created_at < "'$(date -d '1 day ago' -Iseconds)'") | .id')
           count=$(echo "$runs" | grep -c '^[0-9]\+$' || true)
           if [ $count -gt 3 ]; then
             echo "找到 $count 条旧记录，将删除最早 $((count - 3)) 条"
             echo "$runs" | tail -n +4 | while read id; do
-              echo "删除运行记录 ID: $id"
               gh api -X DELETE repos/${{ github.repository }}/actions/runs/$id
             done
           else
